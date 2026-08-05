@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[codz]
+.venv/
+.env
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Caches de ferramentas
+.ruff_cache/
+.pytest_cache/
+
+# macOS
+.DS_Store

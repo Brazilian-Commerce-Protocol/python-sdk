@@ -1,0 +1,635 @@
+# Copyright 2026 UCP Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Modifications Copyright 2026 BCP Authors. Vendored from the UCP python-sdk
+# and changed in two places, both marked "BCP divergence" below:
+#   1. the three directories are taken from the command line, because this
+#      pipeline builds in a temporary directory instead of a fixed clone path;
+#   2. array `contains` is enforced on the generated RootModel subclass rather
+#      than on a TypeAliasType, because this SDK generates array roots as
+#      RootModel (custom template, frozen=True) and never as a type alias.
+
+"""Post-generation fixes for constraints datamodel-code-generator ignores.
+
+Three constraint families are handled:
+
+* ``minProperties`` on an object schema WITH declared properties is dropped by
+  the generator (issue #49): every field is optional, so an empty instance
+  passes validation in violation of the schema. (``minProperties`` on a
+  free-form object property is already handled natively — the generator maps it
+  to ``Field(min_length=...)`` on the dict field.) The script scans the
+  preprocessed schemas for root-level ``minProperties`` constraints and injects
+  a ``model_validator(mode="after")`` into the matching generated classes.
+  JSON Schema counts the keys present on the object, so the validator counts
+  provided fields (``model_fields_set``) unioned with extra keys
+  (``model_extra``) — an explicit null is a present key, and unknown keys on
+  ``extra="allow"`` models count too.
+
+* ``contains`` / ``minContains`` / ``maxContains`` on an array schema is likewise
+  dropped by the generator: ``totals.json`` requires *exactly one* ``subtotal``
+  *and exactly one* ``total`` entry, but the generated ``Totals`` is a bare
+  ``list[Total]`` alias, so an empty array (or one missing either required entry,
+  or with duplicates) validates in violation of the schema. BCP divergence:
+  upstream emits array roots as a ``TypeAliasType`` and threads a counting
+  function in as a ``pydantic.AfterValidator``; here they are ``RootModel``
+  subclasses, which do take a ``model_validator``, so the bound is enforced as
+  a method counting over ``self.root``. Every predicate is derived from
+  ``contains.properties.<field>.const`` — nothing is hard-coded — and one method
+  enforces *all* of a schema's contains bounds.
+
+  The pristine (pre-preprocessing) schemas are read for this: ``totals.json``
+  carries its two containment rules as two ``allOf`` branches, and
+  ``preprocess_schemas.py`` merges ``allOf`` into the root, where a JSON node can
+  hold only one ``contains`` — so the second (``total``) would be lost if the
+  preprocessed output were scanned. generate_models.sh snapshots the originals
+  before preprocessing for exactly this reason. The bound is applied to the base
+  model and to its generated request variants (linked by file stem), and travels
+  wherever the model is reused as a field type.
+
+* ``uniqueItems`` on an array is dropped entirely by the generator, so a list
+  field accepts duplicate entries in violation of the schema. The script
+  collects the names of array properties declared with ``uniqueItems`` and
+  injects a ``field_validator(mode="after")`` into each generated class that
+  declares a matching list field.
+
+Runs from generate_models.sh between generation and formatting; idempotent.
+"""
+
+import json
+import re
+import sys
+from pathlib import Path
+
+_USAGE = (
+    "usage: postprocess_models.py <preprocessed-schemas> <pristine-schemas> "
+    "<models-dir>"
+)
+
+# BCP divergence: upstream hard-codes its clone layout. This pipeline builds in
+# a throwaway directory, so the paths arrive from generate_models.sh. The
+# pristine snapshot is the second argument: array contains bounds are read from
+# there, not from the preprocessed tree, because preprocessing merges allOf and
+# a JSON node holds only one contains keyword.
+if len(sys.argv) != 4:
+    sys.exit(_USAGE)
+
+SCHEMA_DIR = Path(sys.argv[1])
+RAW_SCHEMA_DIR = Path(sys.argv[2])
+OUTPUT_DIR = Path(sys.argv[3])
+
+_MARKER = "_enforce_min_properties"
+
+_VALIDATOR_TEMPLATE = '''
+    @model_validator(mode="after")
+    def {marker}(self):
+        """JSON Schema minProperties: require at least {minimum}
+        provided {properties_noun}."""
+        provided = self.model_fields_set | set(self.model_extra or {{}})
+        if len(provided) < {minimum}:
+            raise ValueError(
+                "At least {minimum} {properties_noun} must be provided "
+                "(schema minProperties={minimum})"
+            )
+        return self
+'''
+
+_UNIQUE_MARKER = "_enforce_unique_items"
+
+_UNIQUE_VALIDATOR_TEMPLATE = '''
+    @field_validator("{field}", mode="after")
+    def {marker}_{field}(cls, value):  # noqa: N805
+        """JSON Schema uniqueItems: reject duplicate entries."""
+        if value is None:
+            return value
+        seen = []
+        for item in value:
+            if item in seen:
+                raise ValueError(
+                    "Items must be unique (schema uniqueItems=true)"
+                )
+            seen.append(item)
+        return value
+'''
+
+
+def find_root_min_properties(schema_dir):
+    """Map schema title -> minProperties for root-level object constraints."""
+    found = {}
+    for path in sorted(Path(schema_dir).rglob("*.json")):
+        try:
+            schema = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(schema, dict):
+            continue
+        minimum = schema.get("minProperties")
+        if not minimum or not schema.get("properties"):
+            continue
+        title = schema.get("title")
+        if not title:
+            sys.stderr.write(
+                f"  ! {path}: root minProperties but no title; "
+                "cannot map to a class\n"
+            )
+            continue
+        found[title] = minimum
+    return found
+
+
+def _ensure_pydantic_import(source, symbol):
+    """Add ``symbol`` to the ``from pydantic import`` line if absent."""
+    if re.search(
+        rf"^from pydantic import .*\b{re.escape(symbol)}\b", source, re.M
+    ):
+        return source
+    return re.sub(
+        r"^(from pydantic import [^\n]+)$",
+        lambda m: f"{m.group(1)}, {symbol}",
+        source,
+        count=1,
+        flags=re.M,
+    )
+
+
+def inject_min_properties(source, class_name, minimum):
+    """Inject the minProperties validator at the end of ``class_name``."""
+    if f"def {_MARKER}(" in source:
+        return source
+    class_re = re.compile(rf"^class {re.escape(class_name)}\(", re.M)
+    match = class_re.search(source)
+    if not match:
+        return source
+    # The class body ends at the next top-level statement or EOF.
+    tail = re.compile(r"^\S", re.M)
+    end_match = tail.search(source, match.end())
+    end = end_match.start() if end_match else len(source)
+    method = _VALIDATOR_TEMPLATE.format(
+        marker=_MARKER,
+        minimum=minimum,
+        properties_noun="property" if minimum == 1 else "properties",
+    )
+    body = source[:end].rstrip("\n")
+    rest = source[end:]
+    out = body + "\n" + method + ("\n" + rest if rest else "")
+    return _ensure_pydantic_import(out, "model_validator")
+
+
+def _extract_contains_groups(schema, path=None):
+    """Collect every array ``contains`` group from a schema's root + allOf.
+
+    Each group is ``{"pairs": [(field, const), ...], "min": int,
+    "max": int | None}``, derived from ``contains.properties.<field>.const``
+    with its ``minContains`` / ``maxContains`` bounds. A ``contains`` keyword
+    may sit at the schema root or inside any ``allOf`` branch; each contributes
+    a group, so "exactly one subtotal and one total" yields two. The predicate
+    is read from the schema, never hard-coded.
+    """
+    nodes = [schema]
+    if isinstance(schema.get("allOf"), list):
+        nodes.extend(n for n in schema["allOf"] if isinstance(n, dict))
+    groups = []
+    for node in nodes:
+        contains = node.get("contains")
+        if not isinstance(contains, dict):
+            continue
+        props = contains.get("properties")
+        pairs = []
+        if isinstance(props, dict):
+            for field, spec in props.items():
+                if isinstance(spec, dict) and "const" in spec:
+                    pairs.append((field, spec["const"]))
+        if not pairs:
+            if path is not None:
+                sys.stderr.write(
+                    f"  ! {path}: contains predicate has no "
+                    "properties.*.const; cannot derive a check\n"
+                )
+            continue
+        # JSON Schema: minContains defaults to 1 when contains is present.
+        groups.append(
+            {
+                "pairs": pairs,
+                "min": node.get("minContains", 1),
+                "max": node.get("maxContains"),
+            }
+        )
+    return groups
+
+
+def find_array_contains_constraints(schema_dir):
+    """Map file stem -> ``{"title": str, "groups": [...]}`` for array schemas.
+
+    Keyed by file stem (not title) so a base schema can be linked to its
+    generated request variants, whose stems extend it (``totals`` ->
+    ``totals_create_request``). Scanned against the *pristine* schemas
+    (``RAW_SCHEMA_DIR``); see the module docstring for why the preprocessed
+    output must not be used here.
+    """
+    found = {}
+    for path in sorted(Path(schema_dir).rglob("*.json")):
+        try:
+            schema = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(schema, dict):
+            continue
+        # ``contains`` only constrains arrays; skip anything else.
+        if schema.get("type") != "array" and "items" not in schema:
+            continue
+        groups = _extract_contains_groups(schema, path)
+        if not groups:
+            continue
+        title = schema.get("title")
+        if not title:
+            sys.stderr.write(
+                f"  ! {path}: array contains constraint but no title; "
+                "cannot map to a model\n"
+            )
+            continue
+        found[path.stem] = {"title": title, "groups": groups}
+    return found
+
+
+def _alias_name(title):
+    """Derive the generated alias name from a schema title (drop spaces)."""
+    return "".join(title.split())
+
+
+def _to_camel_case(string):
+    """Convert a string (snake, kebab, space-separated) to CamelCase."""
+    parts = re.split(r"[^a-zA-Z0-9]", string)
+    return "".join(p.capitalize() for p in parts if p)
+
+
+def _snake_name(name):
+    """CamelCase alias -> snake_case suffix for a unique function name."""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+def _predicate_expr(pairs):
+    """Build a per-item boolean expression matching all (field, const) pairs.
+
+    Items are ``Total`` instances after inner validation, but a mapping is
+    handled too so the check is robust regardless of the item representation.
+    """
+    parts = []
+    for field, const in pairs:
+        parts.append(
+            f"(_item.get({field!r}) if isinstance(_item, dict) "
+            f"else getattr(_item, {field!r}, None)) == {const!r}"
+        )
+    return " and ".join(parts)
+
+
+def _build_contains_method(method_name, groups):
+    """Render the ``model_validator`` counting over ``self.root``.
+
+    BCP divergence: upstream renders a module-level function for an
+    ``AfterValidator``; here it is a method on the generated RootModel.
+    """
+    lines = [
+        "",
+        '    @model_validator(mode="after")',
+        f"    def {method_name}(self):",
+        '        """JSON Schema contains/minContains/maxContains."""',
+        # A request variant's root is a union (list of items OR the request
+        # object), so the root is not always a list. contains only constrains
+        # arrays; anything else is out of its scope and passes through.
+        "        if not isinstance(self.root, list):",
+        "            return self",
+    ]
+    for index, group in enumerate(groups):
+        count = "_matched" if len(groups) == 1 else f"_matched_{index}"
+        desc = ", ".join(f"{f}=={c!r}" for f, c in group["pairs"])
+        lines += [
+            f"        {count} = sum(",
+            "            1",
+            "            for _item in self.root",
+            f"            if {_predicate_expr(group['pairs'])}",
+            "        )",
+        ]
+        minimum = group["min"]
+        noun = "entry" if minimum == 1 else "entries"
+        lines += [
+            f"        if {count} < {minimum}:",
+            "            raise ValueError(",
+            f'                "Array must contain at least {minimum} {noun} "',
+            f'                "matching {desc} (schema minContains={minimum})"',
+            "            )",
+        ]
+        maximum = group["max"]
+        if maximum is not None:
+            noun = "entry" if maximum == 1 else "entries"
+            lines += [
+                f"        if {count} > {maximum}:",
+                "            raise ValueError(",
+                f'                "Array must contain at most {maximum} {noun} "',
+                f'                "matching {desc} (schema maxContains={maximum})"',
+                "            )",
+            ]
+    lines.append("        return self")
+    return "\n".join(lines) + "\n"
+
+
+def inject_array_contains(source, class_name, groups):
+    """Inject the contains validator at the end of ``class_name``.
+
+    BCP divergence: array roots here are ``class NAME(RootModel[list[...]])``,
+    emitted by the custom RootModel template, not
+    ``NAME = TypeAliasType("NAME", Annotated[...])``. A RootModel subclass takes
+    a ``model_validator``, so the bound is enforced as a method over
+    ``self.root`` instead of as alias metadata. Idempotent via the method name.
+    """
+    method_name = f"_enforce_contains_{_snake_name(class_name)}"
+    if f"def {method_name}(" in source:
+        return source
+    class_re = re.compile(rf"^class {re.escape(class_name)}\(RootModel\[", re.M)
+    match = class_re.search(source)
+    if not match:
+        return source
+    # The class body ends at the next top-level statement or EOF.
+    tail = re.compile(r"^\S", re.M)
+    end_match = tail.search(source, match.end())
+    end = end_match.start() if end_match else len(source)
+    method = _build_contains_method(method_name, groups)
+    body = source[:end].rstrip("\n")
+    rest = source[end:]
+    out = body + "\n" + method + ("\n" + rest if rest else "")
+    return _ensure_pydantic_import(out, "model_validator")
+
+
+def find_unique_items_fields(schema_dir):
+    """Map generated class names to fields carrying ``uniqueItems``.
+
+    A schema node needs a title so its constraint can be associated with a
+    generated class. Untitled nodes are resolved using their property path.
+    """
+    fields_by_class = {}
+
+    def walk(node, current_class_name, path_str):
+        if not isinstance(node, dict):
+            return
+
+        if isinstance(node.get("title"), str):
+            current_class_name = _alias_name(node["title"])
+
+        props = node.get("properties")
+        if isinstance(props, dict):
+            for name, prop in props.items():
+                if not isinstance(prop, dict):
+                    continue
+
+                if prop.get("uniqueItems") is True and (
+                    prop.get("type") == "array" or "items" in prop
+                ):
+                    if current_class_name is None:
+                        sys.stderr.write(
+                            f"  ! {path_str}: uniqueItems field '{name}' "
+                            "belongs to an untitled object; cannot map to a class\n"
+                        )
+                        continue
+                    fields_by_class.setdefault(current_class_name, set()).add(
+                        name
+                    )
+
+                # Recurse into properties
+                next_class_name = (
+                    _to_camel_case(name) if current_class_name else None
+                )
+                walk(prop, next_class_name, path_str)
+
+        # Recurse into $defs
+        defs = node.get("$defs")
+        if isinstance(defs, dict):
+            for def_name, def_node in defs.items():
+                walk(def_node, _to_camel_case(def_name), path_str)
+
+        # Recurse into combinators (allOf, anyOf, oneOf)
+        for key in ("allOf", "anyOf", "oneOf"):
+            if isinstance(node.get(key), list):
+                for item in node[key]:
+                    walk(item, current_class_name, path_str)
+
+    for path in sorted(Path(schema_dir).rglob("*.json")):
+        try:
+            schema = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(schema, dict):
+            continue
+
+        root_title = schema.get("title")
+        initial_class = (
+            _alias_name(root_title) if root_title else _to_camel_case(path.stem)
+        )
+        walk(schema, initial_class, str(path))
+
+    return fields_by_class
+
+
+def inject_unique_items(source, unique_fields_by_class):
+    """Inject uniqueness validators for list fields declared ``uniqueItems``.
+
+    A validator is added only when both the generated class name and list
+    field name match the scoped schema constraints.
+    """
+    if not unique_fields_by_class:
+        return source
+    class_re = re.compile(r"^class (\w+)\(", re.M)
+    matches = list(class_re.finditer(source))
+    if not matches:
+        return source
+    new_source = source
+    patched = False
+    # Process from the last class to the first so earlier insert offsets
+    # (computed against the original source) stay valid as text is appended.
+    for match in reversed(matches):
+        unique_fields = unique_fields_by_class.get(match.group(1), set())
+        if not unique_fields:
+            continue
+        body_start = match.end()
+        tail = re.compile(r"^\S", re.M)
+        end_match = tail.search(source, body_start)
+        body_end = end_match.start() if end_match else len(source)
+        body = source[body_start:body_end]
+        targets = []
+        for field_match in re.finditer(
+            r"^    (\w+): [^\n]*\blist\[", body, re.M
+        ):
+            field = field_match.group(1)
+            marker = f"def {_UNIQUE_MARKER}_{field}("
+            if field in unique_fields and marker not in body:
+                targets.append(field)
+        if not targets:
+            continue
+        methods = "".join(
+            _UNIQUE_VALIDATOR_TEMPLATE.format(
+                marker=_UNIQUE_MARKER, field=field
+            )
+            for field in targets
+        )
+        prefix = new_source[:body_end].rstrip("\n")
+        suffix = new_source[body_end:]
+        new_source = prefix + methods + ("\n" + suffix if suffix else "")
+        patched = True
+    if patched:
+        new_source = _ensure_pydantic_import(new_source, "field_validator")
+    return new_source
+
+
+def _patch_min_properties():
+    """Inject minProperties validators; return (patched_count, exit_code)."""
+    constraints = find_root_min_properties(SCHEMA_DIR)
+    if not constraints:
+        sys.stdout.write(
+            "postprocess: no root-level minProperties constraints found\n"
+        )
+        return 0, 0
+    patched = 0
+    for title, minimum in sorted(constraints.items()):
+        hits = []
+        for path in sorted(OUTPUT_DIR.rglob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            if not re.search(rf"^class {re.escape(title)}\(", source, re.M):
+                continue
+            updated = inject_min_properties(source, title, minimum)
+            if updated != source:
+                path.write_text(updated, encoding="utf-8")
+                patched += 1
+            hits.append(path)
+        label = ", ".join(str(h) for h in hits) or "NO GENERATED CLASS FOUND"
+        sys.stdout.write(f"  minProperties={minimum} on '{title}' -> {label}\n")
+        if not hits:
+            sys.stderr.write(
+                f"  ! '{title}' has no generated class; "
+                "constraint not enforced\n"
+            )
+            return patched, 1
+    return patched, 0
+
+
+def _array_contains_targets():
+    """Resolve ``title -> groups`` for every model needing a contains bound.
+
+    The authoritative (complete) groups come from the pristine schemas. The
+    preprocessed tree is consulted only to enumerate which models actually
+    exist — the base plus its generated request variants — so each variant
+    inherits its base schema's full set of containment rules. Variants are
+    linked to their base by file stem (``totals_create_request`` -> ``totals``).
+    """
+    raw = find_array_contains_constraints(RAW_SCHEMA_DIR)
+    if not raw:
+        # Fallback keeps a standalone run working if the snapshot is absent,
+        # though the pipeline always provides it (see module docstring).
+        raw = find_array_contains_constraints(SCHEMA_DIR)
+        if raw:
+            sys.stderr.write(
+                f"  ! {RAW_SCHEMA_DIR} missing; falling back to preprocessed "
+                "schemas (multi-branch contains may be incomplete)\n"
+            )
+    if not raw:
+        return {}
+    raw_stems = sorted(raw, key=len, reverse=True)
+    targets = {}
+    # Enumerate base + variants from the preprocessed tree; attach raw groups.
+    for stem, info in find_array_contains_constraints(SCHEMA_DIR).items():
+        origin = next(
+            (s for s in raw_stems if stem == s or stem.startswith(s + "_")),
+            None,
+        )
+        if origin is not None:
+            targets[info["title"]] = raw[origin]["groups"]
+    # Defensive: cover each raw base title even if the preprocessed base lost
+    # its contains entirely.
+    for info in raw.values():
+        targets.setdefault(info["title"], info["groups"])
+    return targets
+
+
+def _patch_array_contains():
+    """Inject array-contains validators; return (patched_count, exit_code)."""
+    targets = _array_contains_targets()
+    if not targets:
+        sys.stdout.write("postprocess: no array contains constraints found\n")
+        return 0, 0
+    patched = 0
+    for title, groups in sorted(targets.items()):
+        class_name = _alias_name(title)
+        hits = []
+        for path in sorted(OUTPUT_DIR.rglob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            # BCP divergence: match the RootModel subclass, not a type alias.
+            if not re.search(
+                rf"^class {re.escape(class_name)}\(RootModel\[", source, re.M
+            ):
+                continue
+            updated = inject_array_contains(source, class_name, groups)
+            if updated != source:
+                path.write_text(updated, encoding="utf-8")
+                patched += 1
+            hits.append(path)
+        preds = "; ".join(
+            " & ".join(f"{f}=={c!r}" for f, c in g["pairs"]) for g in groups
+        )
+        label = ", ".join(str(h) for h in hits) or "NO GENERATED ROOT MODEL FOUND"
+        sys.stdout.write(f"  contains [{preds}] on '{title}' -> {label}\n")
+        if not hits:
+            sys.stderr.write(
+                f"  ! '{title}' has no generated RootModel; "
+                "constraint not enforced\n"
+            )
+            return patched, 1
+    return patched, 0
+
+
+def _patch_unique_items():
+    """Inject uniqueItems validators; return (patched_count, exit_code)."""
+    unique_fields_by_class = find_unique_items_fields(SCHEMA_DIR)
+    if not unique_fields_by_class:
+        sys.stdout.write("postprocess: no uniqueItems constraints found\n")
+        return 0, 0
+    unique_patched = 0
+    touched = []
+    for path in sorted(OUTPUT_DIR.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        updated = inject_unique_items(source, unique_fields_by_class)
+        if updated != source:
+            path.write_text(updated, encoding="utf-8")
+            unique_patched += 1
+            touched.append(path)
+    labels = sorted(
+        f"{class_name}.{field}"
+        for class_name, fields in unique_fields_by_class.items()
+        for field in fields
+    )
+    sys.stdout.write(
+        f"  uniqueItems fields {labels} -> "
+        f"{unique_patched} module(s) patched"
+        f" ({', '.join(str(t) for t in touched) or 'none'})\n"
+    )
+    return unique_patched, 0
+
+
+def main():
+    """Main entry point to scan schemas and patch generated models."""
+    patched_mp, rc_mp = _patch_min_properties()
+    patched_ac, rc_ac = _patch_array_contains()
+    patched_ui, rc_ui = _patch_unique_items()
+    total = patched_mp + patched_ac + patched_ui
+    sys.stdout.write(f"postprocess: {total} module(s) patched\n")
+    return rc_mp or rc_ac or rc_ui
+
+
+if __name__ == "__main__":
+    sys.exit(main())
