@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual trigger: lets a maintainer re-run the suite without pushing, which
+  # matters because model regeneration is a manual step with no drift check.
+  workflow_dispatch:
 
 permissions:
   contents: read
