@@ -25,7 +25,7 @@ O versionamento segue o do `python-sdk` do UCP: o minor acompanha a versão da
 spec e o patch é correção do binding sobre a mesma spec. Enquanto a spec BCP
 estiver em `draft`, sem release datada, o SDK fica em `0.1.x`.
 
-## 0.1.0a1 (não lançada)
+## 0.1.0a1 (11/08/2026)
 
 Primeira versão publicada, a partir do repositório de incubação. Alpha de
 propósito: o pacote existe para reservar o nome no PyPI e exercitar o fluxo de
