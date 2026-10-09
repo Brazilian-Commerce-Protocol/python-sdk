@@ -25,6 +25,16 @@ O versionamento segue o do `python-sdk` do UCP: o minor acompanha a versão da
 spec e o patch é correção do binding sobre a mesma spec. Enquanto a spec BCP
 estiver em `draft`, sem release datada, o SDK fica em `0.1.x`.
 
+## 0.1.0a2 (09/10/2026)
+
+Modelos regenerados a partir da spec pública atualizada. O código gerado é o
+mesmo da `0.1.0a1`: a única mudança de schema no período foi o `$id` de
+`discovery/profile_schema.json` (de `https://bcp.dev.br/schemas/discovery/profile.json`
+para `https://bcp.dev.br/discovery/profile.json`), que não aparece nos modelos.
+
+- Spec: [`ceia-br/bcp`](https://github.com/ceia-br/bcp), branch `main`, commit
+  `f596b776d5b0504a258f7683725c9c1493d02c6c`.
+
 ## 0.1.0a1 (11/08/2026)
 
 Primeira versão publicada, a partir do repositório de incubação. Alpha de
