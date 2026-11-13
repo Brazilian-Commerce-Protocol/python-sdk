@@ -38,7 +38,7 @@ jobs:
         run: uv run --python ${{ matrix.python-version }} pytest
 
   generated:
-    name: Regeneration and distribution
+    name: Regeneration
     runs-on: ubuntu-latest
     env:
       BCP_REF: fe05774c34144355eddc2adceddc9f0400a0e1d5
@@ -59,6 +59,15 @@ jobs:
             git diff -- src/bcp_sdk/models
             exit 1
           fi
+
+  distribution:
+    name: Distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
       - name: Build wheel and source distribution
         run: uv build
       - name: Validate the installed wheel outside the source tree
