@@ -3,36 +3,44 @@
 #
 # Mirrors the UCP python-sdk pipeline: clone the spec repo, preprocess, run
 # datamodel-codegen with the UCP templates and flags, then postprocess the
-# constraints the generator drops. The spec lives in the public /bcp repository;
+# constraints the generator drops. The spec lives in the /bcp repository;
 # BCP_REPO accepts a URL or local path override, and an optional first argument
 # selects a release branch (e.g. `2026-04-08` clones `release/2026-04-08`;
-# default is `main`). The file header comes from [tool.datamodel-codegen] in this
+# default is `main`). BCP_REF selects an exact commit, tag or branch instead.
+# The file header comes from [tool.datamodel-codegen] in this
 # package's pyproject.toml.
 #
-# Only what is committed here ships: models generated from a non-public spec
-# would publish that spec's text as docstrings. Use BCP_REPO for local checks,
-# never for what goes into a commit.
+# The spec is private; fetching requires authorized Git access. Generated
+# docstrings and fixtures disclose source content, so confirm authorization
+# before including them in a public commit. CI validates the committed package;
+# authenticated regeneration and drift checks are documented in README.md.
 set -euo pipefail
 
 cd "$(dirname "$0")"                        # repo root (holds pyproject.toml)
 
-BCP_REPO="${BCP_REPO:-https://github.com/ceia-br/bcp}"
+BCP_REPO="${BCP_REPO:-https://github.com/Brazilian-Commerce-Protocol/bcp.git}"
 OUTPUT_DIR="src/bcp_sdk/models"             # generated artifact, never edit by hand
 
-if [ $# -ge 1 ]; then
-    BRANCH="release/$1"
-    echo "Cloning spec version $1 (branch: $BRANCH)..."
-else
-    BRANCH="main"
-    echo "No version specified, cloning main..."
+if [ $# -gt 1 ] || { [ $# -eq 1 ] && [ -n "${BCP_REF:-}" ]; }; then
+    echo "Use either one release date or BCP_REF, not both." >&2
+    exit 2
 fi
+
+if [ $# -eq 1 ]; then
+    SPEC_REF="release/$1"
+else
+    SPEC_REF="${BCP_REF:-main}"
+fi
+echo "Fetching spec ref: $SPEC_REF"
 
 # Mirror the UCP source/ layout in a throwaway build dir: schemas/ and discovery/
 # as siblings, so discovery's `../schemas/ucp.json` refs resolve. Output mirrors it:
 # models/schemas/** and models/discovery/**.
 BUILD="$(mktemp -d)"
 trap 'rm -rf "$BUILD"' EXIT
-git clone -b "$BRANCH" --depth 1 "$BCP_REPO" "$BUILD/bcp"
+git init -q "$BUILD/bcp"
+git -C "$BUILD/bcp" fetch --depth 1 "$BCP_REPO" "$SPEC_REF"
+git -C "$BUILD/bcp" checkout -q --detach FETCH_HEAD
 mkdir -p "$BUILD/src/schemas" "$BUILD/src/discovery"
 cp -R "$BUILD/bcp/schemas/." "$BUILD/src/schemas/"
 cp -R "$BUILD/bcp/discovery/." "$BUILD/src/discovery/"
@@ -51,6 +59,7 @@ cp -R "$BUILD/src/schemas" "$BUILD/raw_schemas"
 # 1. Preprocess only schemas/ (flatten allOf + emit *_request.json variants); it holds
 #    ucp.json with $defs.entity. discovery/ has no such coupling, so it stays raw.
 uv run python preprocess_schemas.py "$BUILD/src/schemas"
+uv run python prepare_catalog_publish.py "$BUILD/src/schemas" "$BUILD/raw_schemas"
 
 # 2. Generate. custom-file-header is read from [tool.datamodel-codegen] (CWD here).
 #    --target-python-version matches requires-python: without it the generator

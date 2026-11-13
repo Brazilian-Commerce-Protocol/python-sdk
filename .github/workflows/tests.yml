@@ -5,7 +5,7 @@ on:
     branches: [main]
   pull_request:
   # Manual trigger: lets a maintainer re-run the suite without pushing, which
-  # matters because model regeneration is a manual step with no drift check.
+  # matters when a maintainer needs to recheck a release candidate.
   workflow_dispatch:
 
 permissions:
@@ -29,10 +29,44 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --python ${{ matrix.python-version }}
+        run: uv sync --locked --python ${{ matrix.python-version }}
 
       - name: Lint
         run: uv run --python ${{ matrix.python-version }} ruff check .
 
       - name: Run tests
         run: uv run --python ${{ matrix.python-version }} pytest
+
+  distribution:
+    name: Distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+      - name: Build wheel and source distribution
+        run: uv build
+      - name: Validate the installed wheel outside the source tree
+        shell: bash
+        run: |
+          wheel="$(realpath dist/*.whl)"
+          cd "$(mktemp -d)"
+          uv run --no-project --isolated --with "$wheel" python - <<'PY'
+          import importlib.metadata
+          from bcp_sdk.models.schemas.shopping.catalog_publish import (
+              Catalog, Identifier, PublishProduct, PublishResponse,
+              PublishVariant, ReplaceRequest, UpdateRequest,
+          )
+          from pydantic import ValidationError
+
+          assert importlib.metadata.version("bcp-sdk") == "0.1.0a3"
+          assert ReplaceRequest.model_validate({"base_revision": None, "products": []}).products.root == []
+          for model, payload in ((Identifier, "bad id"), (PublishProduct, {}), (PublishVariant, {})):
+              try:
+                  model.model_validate(payload)
+              except ValidationError:
+                  pass
+              else:
+                  raise AssertionError(f"{model.__name__} accepted invalid data")
+          PY
