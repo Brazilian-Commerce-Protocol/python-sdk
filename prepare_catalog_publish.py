@@ -1,4 +1,40 @@
-"""Restore publication constraints after the unchanged UCP preprocessing pass."""
+# Copyright 2026 BCP Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Restore catalog publication inheritance before Python model generation.
+
+This BCP-specific step runs after the unchanged, vendored UCP preprocessor and
+before datamodel-code-generator. The preprocessor's allOf and metadata flattening
+can lose constraints needed by catalog.publish; repairing the intermediate schema
+keeps the UCP source intact and avoids hand-editing generated Python models.
+
+The pristine schemas supply the inheritance rules used to repair only
+shopping/catalog_publish.json:
+
+* Restore inherited required fields on redeclared product/variant properties,
+  including identifiers and titles, and inherited array bounds such as the
+  minimum of one variant. Fields that are not redeclared retain their typed
+  base-model definitions, including price and description.
+* Resolve nested local metadata references while preserving external inheritance,
+  so publication receipts inherit the base model's required ucp.version field.
+  External references retain their original document as the resolution base.
+
+Required references that cannot be resolved stop generation. Specs without
+catalog publication are left unchanged. Constraints discarded by the model
+generator itself, such as Identifier's not.pattern, are handled later by
+postprocess_models.py.
+"""
 
 import argparse
 import copy
