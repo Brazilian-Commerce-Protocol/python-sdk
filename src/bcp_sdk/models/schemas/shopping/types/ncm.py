@@ -13,7 +13,7 @@ class NCM(RootModel[str]):
     model_config = ConfigDict(
         frozen=True,
     )
-    root: str = Field(..., pattern="^[0-9]{8}$", title="NCM")
+    root: str = Field(..., max_length=8, pattern="^[0-9]{8}$", title="NCM")
     """
     Mercosur Common Nomenclature (NCM) fiscal classification of a product, 8 digits. Drives tax calculation, Imposto Seletivo category marking, and NF-e issuance (e.g., '33049910').
     """

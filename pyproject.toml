@@ -1,6 +1,6 @@
 [project]
 name = "bcp-sdk"
-version = "0.1.0a2"
+version = "0.1.0a3"
 description = "BCP Python SDK"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -29,7 +29,7 @@ dependencies = [
 [project.urls]
 Homepage = "https://bcp.dev.br"
 Repository = "https://github.com/Brazilian-Commerce-Protocol/python-sdk"
-Specification = "https://github.com/ceia-br/bcp"
+Specification = "https://github.com/Brazilian-Commerce-Protocol/bcp"
 
 [dependency-groups]
 dev = [
@@ -44,6 +44,9 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/bcp_sdk"]

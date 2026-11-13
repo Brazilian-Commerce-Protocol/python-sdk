@@ -13,16 +13,17 @@
 # limitations under the License.
 #
 # Modifications Copyright 2026 BCP Authors. Vendored from the UCP python-sdk
-# and changed in two places, both marked "BCP divergence" below:
+# with BCP adaptations marked "BCP divergence" below:
 #   1. the three directories are taken from the command line, because this
 #      pipeline builds in a temporary directory instead of a fixed clone path;
 #   2. array `contains` is enforced on the generated RootModel subclass rather
 #      than on a TypeAliasType, because this SDK generates array roots as
 #      RootModel (custom template, frozen=True) and never as a type alias.
+#   3. string not.pattern is restored on schema-scoped RootModel classes.
 
 """Post-generation fixes for constraints datamodel-code-generator ignores.
 
-Three constraint families are handled:
+Four constraint families are handled:
 
 * ``minProperties`` on an object schema WITH declared properties is dropped by
   the generator (issue #49): every field is optional, so an empty instance
@@ -63,9 +64,14 @@ Three constraint families are handled:
   injects a ``field_validator(mode="after")`` into each generated class that
   declares a matching list field.
 
+* String ``not: {pattern: ...}`` constraints are restored on the corresponding
+  RootModel, including definitions inside a schema container. Matching is scoped
+  to the schema's generated module, rather than every class with the same name.
+
 Runs from generate_models.sh between generation and formatting; idempotent.
 """
 
+import ast
 import json
 import re
 import sys
@@ -621,14 +627,94 @@ def _patch_unique_items():
     return unique_patched, 0
 
 
+# BCP divergence: restore string exclusions on the schema's own generated module.
+def find_string_not_patterns(schema_dir):
+    """Find string roots and definitions with a prohibited regular expression."""
+    found = []
+
+    def walk(node, class_name, module):
+        if not isinstance(node, dict):
+            return
+        if isinstance(node.get("title"), str):
+            class_name = _alias_name(node["title"])
+        negative = node.get("not")
+        if node.get("type") == "string" and isinstance(negative, dict):
+            pattern = negative.get("pattern")
+            if isinstance(pattern, str):
+                found.append((module, class_name, pattern))
+        for name, definition in node.get("$defs", {}).items():
+            walk(definition, _to_camel_case(name), module)
+
+    for path in sorted(Path(schema_dir).rglob("*.json")):
+        schema = json.loads(path.read_text(encoding="utf-8"))
+        module = path.relative_to(schema_dir).with_suffix(".py")
+        walk(schema, _to_camel_case(path.stem), module)
+    return found
+
+
+def inject_string_not_pattern(source, class_name, pattern):
+    """Inject an idempotent RootModel validator without relying on line wrapping."""
+    tree = ast.parse(source)
+    target = next(
+        (node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name),
+        None,
+    )
+    if target is None or not any(
+        isinstance(base, ast.Subscript)
+        and isinstance(base.value, ast.Name)
+        and base.value.id == "RootModel"
+        for base in target.bases
+    ):
+        raise ValueError(f"No generated string RootModel found for {class_name}")
+    marker = "_enforce_not_pattern"
+    if any(isinstance(node, ast.FunctionDef) and node.name == marker for node in target.body):
+        return source
+    method = (
+        '\n    @field_validator("root", mode="after")\n'
+        f"    def {marker}(cls, value):  # noqa: N805\n"
+        '        """JSON Schema not.pattern: reject matching strings."""\n'
+        f"        if re.search({pattern!r}, value) is not None:\n"
+        f"            raise ValueError({'String must not match ' + pattern + ' (schema not.pattern)'!r})\n"
+        "        return value\n"
+    )
+    lines = source.splitlines(keepends=True)
+    lines.insert(target.end_lineno, method)
+    updated = _ensure_pydantic_import("".join(lines), "field_validator")
+    if not any(
+        isinstance(node, ast.Import) and any(alias.name == "re" for alias in node.names)
+        for node in tree.body
+    ):
+        updated = re.sub(r"^(from pydantic import )", r"import re\n\n\1", updated, count=1, flags=re.M)
+    return updated
+
+
+def _patch_string_not_patterns():
+    """Restore string exclusions and fail if a declared constraint cannot be applied."""
+    patched = 0
+    for module, class_name, pattern in find_string_not_patterns(SCHEMA_DIR):
+        path = OUTPUT_DIR / "schemas" / module
+        try:
+            source = path.read_text(encoding="utf-8")
+            updated = inject_string_not_pattern(source, class_name, pattern)
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"  ! not.pattern on {module}:{class_name}: {error}\n")
+            return patched, 1
+        if updated != source:
+            path.write_text(updated, encoding="utf-8")
+            patched += 1
+        sys.stdout.write(f"  not.pattern {pattern!r} on {module}:{class_name}\n")
+    return patched, 0
+
+
 def main():
     """Main entry point to scan schemas and patch generated models."""
     patched_mp, rc_mp = _patch_min_properties()
     patched_ac, rc_ac = _patch_array_contains()
     patched_ui, rc_ui = _patch_unique_items()
-    total = patched_mp + patched_ac + patched_ui
+    patched_np, rc_np = _patch_string_not_patterns()
+    total = patched_mp + patched_ac + patched_ui + patched_np
     sys.stdout.write(f"postprocess: {total} module(s) patched\n")
-    return rc_mp or rc_ac or rc_ui
+    return rc_mp or rc_ac or rc_ui or rc_np
 
 
 if __name__ == "__main__":
