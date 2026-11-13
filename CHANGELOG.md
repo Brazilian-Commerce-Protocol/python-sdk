@@ -25,6 +25,25 @@ O versionamento segue o do `python-sdk` do UCP: o minor acompanha a versão da
 spec e o patch é correção do binding sobre a mesma spec. Enquanto a spec BCP
 estiver em `draft`, sem release datada, o SDK fica em `0.1.x`.
 
+## 0.1.0a3 (não publicada)
+
+Modelos de `catalog.publish`, com correções da geração para conservar as
+restrições do contrato de publicação de mercadorias.
+
+- Spec: [`Brazilian-Commerce-Protocol/bcp`](https://github.com/Brazilian-Commerce-Protocol/bcp),
+  branch `main`, commit `fe05774c34144355eddc2adceddc9f0400a0e1d5`.
+- Novos contratos `ReplaceRequest`, `UpdateRequest`, `PublishProduct`,
+  `PublishVariant`, `Catalog` e `PublishResponse`, no módulo `catalog_publish`.
+- Recuperação dos campos obrigatórios herdados, mínimo de uma variante e versão
+  obrigatória no recibo. Identificadores recusam espaços; NCM conserva o limite
+  de oito caracteres da spec.
+- Etapa BCP de preparação do catálogo sem modificar o pré-processador do UCP;
+  pós-processamento idempotente de `not.pattern`, por schema e modelo.
+- `BCP_REF` para regenerar por commit, tag ou branch, fixtures offline, testes
+  de regressão e verificação de regeneração/distribuição na CI.
+- Mantidos o gerador `0.69.0`, Python `>=3.10`, Pydantic `>=2.5.0` e os contratos
+  existentes de `Product` e `Variant`. A sincronização UCP é outra entrega.
+
 ## 0.1.0a2 (09/10/2026)
 
 Modelos regenerados a partir da spec pública atualizada. O código gerado é o
