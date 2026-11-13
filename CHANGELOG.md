@@ -39,8 +39,9 @@ restrições do contrato de publicação de mercadorias.
   de oito caracteres da spec.
 - Etapa BCP de preparação do catálogo sem modificar o pré-processador do UCP;
   pós-processamento idempotente de `not.pattern`, por schema e modelo.
-- `BCP_REF` para regenerar por commit, tag ou branch, fixtures offline, testes
-  de regressão e verificação de regeneração/distribuição na CI.
+- `BCP_REF` para regenerar por commit, tag ou branch, fixtures offline e testes
+  de regressão. A CI valida testes e distribuição; a regeneração é local,
+  documentada e exige acesso autorizado à spec privada.
 - Mantidos o gerador `0.69.0`, Python `>=3.10`, Pydantic `>=2.5.0` e os contratos
   existentes de `Product` e `Variant`. A sincronização UCP é outra entrega.
 

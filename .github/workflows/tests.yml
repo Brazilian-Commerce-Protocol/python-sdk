@@ -37,29 +37,6 @@ jobs:
       - name: Run tests
         run: uv run --python ${{ matrix.python-version }} pytest
 
-  generated:
-    name: Regeneration
-    runs-on: ubuntu-latest
-    env:
-      BCP_REF: fe05774c34144355eddc2adceddc9f0400a0e1d5
-    steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v8.2.0
-        with:
-          enable-cache: true
-      - name: Install locked generation tools
-        run: uv sync --locked --python 3.13
-      - name: Regenerate from the public spec commit
-        run: bash generate_models.sh
-      - name: Check tracked and untracked generated files
-        shell: bash
-        run: |
-          if [[ -n "$(git status --porcelain --untracked-files=all -- src/bcp_sdk/models)" ]]; then
-            git status --short --untracked-files=all -- src/bcp_sdk/models
-            git diff -- src/bcp_sdk/models
-            exit 1
-          fi
-
   distribution:
     name: Distribution
     runs-on: ubuntu-latest
