@@ -3,16 +3,17 @@
 #
 # Mirrors the UCP python-sdk pipeline: clone the spec repo, preprocess, run
 # datamodel-codegen with the UCP templates and flags, then postprocess the
-# constraints the generator drops. The spec lives in the public /bcp repository;
+# constraints the generator drops. The spec lives in the /bcp repository;
 # BCP_REPO accepts a URL or local path override, and an optional first argument
 # selects a release branch (e.g. `2026-04-08` clones `release/2026-04-08`;
 # default is `main`). BCP_REF selects an exact commit, tag or branch instead.
 # The file header comes from [tool.datamodel-codegen] in this
 # package's pyproject.toml.
 #
-# Only what is committed here ships: models generated from a non-public spec
-# would publish that spec's text as docstrings. Use BCP_REPO for local checks,
-# never for what goes into a commit.
+# The spec is private; fetching requires authorized Git access. Generated
+# docstrings and fixtures disclose source content, so confirm authorization
+# before including them in a public commit. CI validates the committed package;
+# authenticated regeneration and drift checks are documented in README.md.
 set -euo pipefail
 
 cd "$(dirname "$0")"                        # repo root (holds pyproject.toml)
