@@ -30,8 +30,8 @@ estiver em `draft`, sem release datada, o SDK fica em `0.1.x`.
 Modelos de `catalog.publish`, com correções da geração para conservar as
 restrições do contrato de publicação de mercadorias.
 
-- Spec: [`Brazilian-Commerce-Protocol/bcp`](https://github.com/Brazilian-Commerce-Protocol/bcp),
-  branch `main`, commit `fe05774c34144355eddc2adceddc9f0400a0e1d5`.
+- Spec: [`ceia-br/bcp`](https://github.com/ceia-br/bcp), branch `main`, commit
+  `a4e33aad8f1e1920d1a623e4bed5204406920c57`.
 - Novos contratos `ReplaceRequest`, `UpdateRequest`, `PublishProduct`,
   `PublishVariant`, `Catalog` e `PublishResponse`, no módulo `catalog_publish`.
 - Recuperação dos campos obrigatórios herdados, mínimo de uma variante e versão
@@ -40,8 +40,8 @@ restrições do contrato de publicação de mercadorias.
 - Etapa BCP de preparação do catálogo sem modificar o pré-processador do UCP;
   pós-processamento idempotente de `not.pattern`, por schema e modelo.
 - `BCP_REF` para regenerar por commit, tag ou branch, fixtures offline e testes
-  de regressão. A CI valida testes e distribuição; a regeneração é local,
-  documentada e exige acesso autorizado à spec privada.
+  de regressão. A CI valida testes e distribuição; a regeneração é local e
+  documentada.
 - Mantidos o gerador `0.69.0`, Python `>=3.10`, Pydantic `>=2.5.0` e os contratos
   existentes de `Product` e `Variant`. A sincronização UCP é outra entrega.
 

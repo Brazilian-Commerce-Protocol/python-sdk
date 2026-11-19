@@ -29,7 +29,7 @@ dependencies = [
 [project.urls]
 Homepage = "https://bcp.dev.br"
 Repository = "https://github.com/Brazilian-Commerce-Protocol/python-sdk"
-Specification = "https://github.com/Brazilian-Commerce-Protocol/bcp"
+Specification = "https://github.com/ceia-br/bcp"
 
 [dependency-groups]
 dev = [
