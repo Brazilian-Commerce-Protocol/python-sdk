@@ -18,7 +18,7 @@
 
 O SDK Python oficial do [Brazilian Commerce Protocol (BCP)](https://bcp.dev.br):
 os modelos pydantic gerados a partir dos JSON Schemas do protocolo, que vivem
-no repositório da spec, [`bcp`](https://github.com/Brazilian-Commerce-Protocol/bcp). Espelha o
+no repositório da spec, [`bcp`](https://github.com/ceia-br/bcp). Espelha o
 `python-sdk` do UCP: a língua fica na spec, o binding Python fica aqui.
 
 ## Instalação
@@ -90,7 +90,7 @@ do UCP e termina no `postprocess_models.py`:
 uv sync --locked --python 3.13
 ./generate_models.sh              # main da spec
 ./generate_models.sh 2026-04-08   # ou uma branch release/YYYY-MM-DD
-BCP_REF=fe05774c34144355eddc2adceddc9f0400a0e1d5 ./generate_models.sh
+BCP_REF=a4e33aad8f1e1920d1a623e4bed5204406920c57 ./generate_models.sh
 ```
 
 `BCP_REF` aceita commit, tag ou branch e não pode ser combinado com o argumento
@@ -98,11 +98,8 @@ de release datada. Sem ambos, a fonte é `main` da spec. Use o commit do
 changelog para reproduzir uma release. No Windows, execute pelo Git Bash ou
 outro Bash compatível, com `uv` no `PATH`.
 
-A spec permanece privada: a regeneração exige uma credencial Git com acesso
-autorizado ao repositório, configurada fora do SDK (por exemplo, pelo credential
-helper do Git). A CI pública testa o pacote e constrói wheel/sdist sem acessar
-a spec. A verificação de regeneração é local, com as ferramentas do lockfile e
-o commit fixado. Após gerar, confira diferenças e arquivos novos não rastreados:
+A verificação de regeneração é local, com as ferramentas do lockfile e o
+commit fixado. Após gerar, confira diferenças e arquivos novos não rastreados:
 
 ```bash
 git diff --exit-code -- src/bcp_sdk/models
@@ -111,17 +108,16 @@ test -z "$(git status --porcelain --untracked-files=all -- src/bcp_sdk/models)"
 
 Os dois comandos devem terminar com sucesso em uma árvore já commitada. Execute
 novamente a geração com o mesmo commit e repita a verificação para confirmar a
-reprodutibilidade. Nenhuma credencial da spec é incluída na CI ou no pacote.
+reprodutibilidade.
 
 Ao final ele imprime o commit da spec usado. Esse commit vai para o
 [CHANGELOG](CHANGELOG.md) na release: é o único registro de qual spec gerou
 determinada versão do pacote.
 
 `BCP_REPO` aceita outra URL ou um caminho local da spec, útil para conferir
-localmente como ficariam os modelos de outra revisão da spec. As descrições
-dos schemas viram docstrings: antes de incluir modelos e fixtures em uma PR
-pública, confirme que essa divulgação está autorizada. Acesso ao repositório
-privado, por si só, não autoriza publicar seu conteúdo.
+localmente como ficariam os modelos de uma spec ainda não publicada. O que sai
+desse uso não se commita: as descrições dos schemas viram docstrings, então
+publicar esses modelos publicaria a spec.
 
 ```bash
 BCP_REPO=../bcp ./generate_models.sh
