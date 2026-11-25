@@ -25,7 +25,7 @@ O versionamento segue o do `python-sdk` do UCP: o minor acompanha a versão da
 spec e o patch é correção do binding sobre a mesma spec. Enquanto a spec BCP
 estiver em `draft`, sem release datada, o SDK fica em `0.1.x`.
 
-## 0.1.0a3 (não publicada)
+## 0.1.0a3 (25/11/2026)
 
 Modelos de `catalog.publish`, com correções da geração para conservar as
 restrições do contrato de publicação de mercadorias.
